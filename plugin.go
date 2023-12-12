@@ -9,64 +9,58 @@ import (
 	"github.com/hashicorp/go-plugin"
 )
 
-// Greeter is the interface that we're exposing as a plugin.
-type Greeter interface {
-	Greet() string
+const PluginId = "weave_plugin"
+
+type Plugin interface {
+	Process(msg map[string]interface{}) (map[string]interface{}, error)
 }
 
 // Here is an implementation that talks over RPC
-type GreeterRPC struct{ client *rpc.Client }
+type WeavePluginRPCClient struct{ client *rpc.Client }
 
-func (g *GreeterRPC) Greet() string {
-	var resp string
-	err := g.client.Call("Plugin.Greet", new(interface{}), &resp)
+func NewRpcClient(c *rpc.Client) Plugin {
+	return &WeavePluginRPCClient{
+		client: c,
+	}
+}
+func (g *WeavePluginRPCClient) Process(msg map[string]interface{}) (map[string]interface{}, error) {
+	var resp = map[string]interface{}{}
+	err := g.client.Call("Plugin.Process", msg, &resp)
 	if err != nil {
-		// You usually want your interfaces to return errors. If they don't,
-		// there isn't much other choice here.
-		panic(err)
+		return nil, err
 	}
 
-	return resp
+	return resp, nil
 }
 
-// Here is the RPC server that GreeterRPC talks to, conforming to
-// the requirements of net/rpc
-type GreeterRPCServer struct {
-	// This is the real implementation
-	Impl Greeter
+type WeavePluginRPCServer struct {
+	Impl Plugin
 }
 
-func (s *GreeterRPCServer) Greet(args interface{}, resp *string) error {
-	*resp = s.Impl.Greet()
+func (s *WeavePluginRPCServer) Process(msg map[string]interface{}, resp *map[string]interface{}) error {
+	r, err := s.Impl.Process(msg)
+	if err != nil {
+		return err
+	}
+	*resp = r
 	return nil
 }
 
-// This is the implementation of plugin.Plugin so we can serve/consume this
-//
-// This has two methods: Server must return an RPC server for this plugin
-// type. We construct a GreeterRPCServer for this.
-//
-// Client must return an implementation of our interface that communicates
-// over an RPC client. We return GreeterRPC for this.
-//
-// Ignore MuxBroker. That is used to create more multiplexed streams on our
-// plugin connection and is a more advanced use case.
-type GreeterPlugin struct {
-	// Impl Injection
-	Impl Greeter
+type PluginWrapper struct {
+	PluginImplementation Plugin
 }
 
-func (p *GreeterPlugin) Server(*plugin.MuxBroker) (interface{}, error) {
-	return &GreeterRPCServer{Impl: p.Impl}, nil
+func (p *PluginWrapper) Server(*plugin.MuxBroker) (interface{}, error) {
+	return &WeavePluginRPCServer{Impl: p.PluginImplementation}, nil
 }
 
-func (GreeterPlugin) Client(b *plugin.MuxBroker, c *rpc.Client) (interface{}, error) {
-	return &GreeterRPC{client: c}, nil
+func (PluginWrapper) Client(b *plugin.MuxBroker, c *rpc.Client) (interface{}, error) {
+	return NewRpcClient(c), nil
 }
 
-func LoadPlugin(id, path string) (Greeter, *plugin.Client, error) {
+func LoadPlugin(path string) (Plugin, *plugin.Client, error) {
 	logger := hclog.New(&hclog.LoggerOptions{
-		Name:   id,
+		Name:   PluginId,
 		Output: os.Stdout,
 		Level:  hclog.Debug,
 	})
@@ -74,7 +68,7 @@ func LoadPlugin(id, path string) (Greeter, *plugin.Client, error) {
 	client := plugin.NewClient(&plugin.ClientConfig{
 		HandshakeConfig: HandshakeConfig,
 		Plugins: map[string]plugin.Plugin{
-			id: &GreeterPlugin{},
+			PluginId: &PluginWrapper{},
 		},
 		Cmd:    exec.Command(path),
 		Logger: logger,
@@ -84,11 +78,11 @@ func LoadPlugin(id, path string) (Greeter, *plugin.Client, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	raw, err := rpcClient.Dispense(id)
+	raw, err := rpcClient.Dispense(PluginId)
 	if err != nil {
 		return nil, nil, err
 	}
-	return raw.(Greeter), client, err
+	return raw.(Plugin), client, err
 
 }
 

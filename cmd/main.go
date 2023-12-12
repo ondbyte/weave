@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -54,14 +55,14 @@ func WeaveCli(cmd flag.CMD, args []string) {
 		os.Exit(0)
 	}
 	if path == "" {
-		log.Fatal("path parameter is required")
+		log.Panic("path parameter is required")
 	}
 	if document == "" {
-		log.Fatal("document parameter is required")
+		log.Panic("document parameter is required")
 	}
 	dirs, err := os.ReadDir(path)
 	if err != nil {
-		panic(err)
+		log.Panic(err)
 	}
 	n := 0
 	t := &weave.Templates{
@@ -82,25 +83,77 @@ func WeaveCli(cmd flag.CMD, args []string) {
 	log.Printf("read %v hcl file", n)
 	m := t.Map()
 	for _, content := range t.ContentBlocks {
-		m.ProcessContent(content)
+		err := m.ProcessContent(content)
+		if err != nil {
+			log.Panic(err)
+		}
 	}
 	for _, data := range m.DataBlocks {
-		m.ProcessData(data)
+		err := m.ProcessData(data)
+		if err != nil {
+			log.Panic(err)
+		}
 	}
 	for _, doc := range m.Documents {
-		m.ProcessDoc(doc)
+		err := m.ProcessDoc(doc)
+		if err != nil {
+			log.Panic(err)
+		}
 	}
 	selectedDocument, ok := m.Documents[fmt.Sprintf("document.%v", document)]
 	if !ok {
-		log.Printf("selected doc %v doesnt exists in hcl source\n", document)
+		log.Fatalf("selected doc %v doesnt exists in hcl source\n", document)
 	}
 	log.Println(selectedDocument)
 	//start the plugins
-
-	pluginA, pluginClient, err := weave.LoadPlugin("plugin_a", "./plugins/plugin_a/plugin_a")
+	pluginA, pluginClient, err := weave.LoadPlugin("../plugins/plugin_a/plugin_a")
 	if err != nil {
 		log.Panic(err)
 	}
 	defer pluginClient.Kill()
-	log.Println(pluginA.Greet())
+
+	storage := map[string]map[string]map[string]interface{}{"data": map[string]map[string]interface{}{}}
+
+	for _, dataBlock := range selectedDocument.DataBlocks {
+		// plugin calls are not concurrent
+		switch dataBlock.Type {
+		case "plugin_a":
+			{
+				attrs, diag := dataBlock.Rest.JustAttributes()
+				if diag != nil {
+					log.Panic(diag)
+				}
+				m := map[string]interface{}{}
+				for k, attr := range attrs {
+					val, err := attr.Expr.Value(nil)
+					if err != nil {
+						log.Panic(err)
+					}
+					i, _ := val.AsBigFloat().Int64()
+					m[k] = i
+				}
+				response, err := pluginA.Process(m)
+				if err != nil {
+					log.Panic(err)
+				}
+				result, ok := response["result"].(int64)
+				if !ok {
+					log.Fatalf(`response should have a key "result" with value of type int64 `+
+						"which is a sum of the parameters in map=%v\n", m)
+				}
+				typeStorage, ok := storage["data"][dataBlock.Type]
+				if !ok {
+					typeStorage = map[string]interface{}{}
+					storage["data"][dataBlock.Type] = typeStorage
+				}
+				typeStorage[dataBlock.Name] = result
+			}
+		}
+	}
+
+	toPrint, err := json.MarshalIndent(storage, "", "	")
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println("\n=====output=======\n" + string(toPrint) + "\n==============")
 }

@@ -4,42 +4,38 @@
 package main
 
 import (
-	"os"
+	"fmt"
 
-	"github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/go-plugin"
 	"github.com/ondbyte/weave"
 )
 
 // Here is a real implementation of Greeter
-type GreeterHello struct {
-	logger hclog.Logger
+type PluginA struct {
 }
 
-func (g *GreeterHello) Greet() string {
-	g.logger.Debug("message from GreeterHello.Greet")
-	return "Hello!"
+func New() weave.Plugin {
+	return &PluginA{}
+}
+
+// Process implements weave.Plugin.
+func (*PluginA) Process(msg map[string]interface{}) (map[string]interface{}, error) {
+	a, ok := msg["parameter_x"].(int64)
+	if !ok {
+		return nil, fmt.Errorf(`value of param "parameter_x" as a int64 is required`)
+	}
+	b, ok := msg["parameter_y"].(int64)
+	if !ok {
+		return nil, fmt.Errorf(`value of param "parameter_y" as a int64 is required`)
+	}
+	return map[string]interface{}{"result": a + b}, nil
 }
 
 func main() {
-	logger := hclog.New(&hclog.LoggerOptions{
-		Level:      hclog.Trace,
-		Output:     os.Stderr,
-		JSONFormat: true,
-	})
-
-	greeter := &GreeterHello{
-		logger: logger,
-	}
-	// pluginMap is the map of plugins we can dispense.
-	var pluginMap = map[string]plugin.Plugin{
-		"greeter": &weave.GreeterPlugin{Impl: greeter},
-	}
-
-	logger.Debug("message from plugin", "foo", "bar")
-
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: weave.HandshakeConfig,
-		Plugins:         pluginMap,
+		Plugins: map[string]plugin.Plugin{
+			weave.PluginId: &weave.PluginWrapper{PluginImplementation: New()},
+		},
 	})
 }

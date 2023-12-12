@@ -2,7 +2,6 @@ package weave
 
 import (
 	"fmt"
-	"log"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
@@ -95,29 +94,31 @@ func (t *Templates) Map() *MapTemplates {
 	return m
 }
 
-func (t *MapTemplates) ProcessDoc(doc *Document) {
+func (t *MapTemplates) ProcessDoc(doc *Document) error {
 	for _, content := range doc.ContentBlocks {
-		t.ProcessContent(content)
+		return t.ProcessContent(content)
 	}
 	for _, data := range doc.DataBlocks {
-		t.ProcessData(data)
+		return t.ProcessData(data)
 	}
+	return nil
 }
 
-func (t *MapTemplates) ProcessData(data *DataBlock) {
+func (t *MapTemplates) ProcessData(data *DataBlock) error {
 	rest := &Templates{}
 	if data.Type == "ref" {
 		diag := gohcl.DecodeBody(data.Rest, nil, rest)
 		if diag.HasErrors() {
-			log.Println(diag.Error())
+			return diag
 		}
 	}
+	return nil
 }
 
-func ProcessReference(contentToProcess, referencedContent *ContentBlock) {
+func ProcessReference(contentToProcess, referencedContent *ContentBlock) error {
 	refAttrs, err := contentToProcess.Rest.JustAttributes()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	newRest := fmt.Sprintf(
 		"content %v %v {", referencedContent.Type, contentToProcess.Name,
@@ -128,14 +129,14 @@ func ProcessReference(contentToProcess, referencedContent *ContentBlock) {
 		}
 		val, err := attr.Expr.Value(nil)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		newRest += "\n" + k + " = " + `"` + val.AsString() + `"`
 	}
 	newRest += "\n}"
 	f, err := hclsyntax.ParseConfig([]byte(newRest), "", hcl.Pos{Line: 1, Column: 1})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	type T struct {
 		Cb *ContentBlock `hcl:"content,block"`
@@ -143,48 +144,47 @@ func ProcessReference(contentToProcess, referencedContent *ContentBlock) {
 	updatedContent := &ContentBlock{}
 	err = gohcl.DecodeBody(f.Body, nil, &T{Cb: updatedContent})
 	if err != nil {
-		log.Fatal(updatedContent)
+		return err
 	}
 	*contentToProcess = *updatedContent
+	return nil
 }
 
-func (t *MapTemplates) ProcessContent(contentToProcess *ContentBlock) {
+func (t *MapTemplates) ProcessContent(contentToProcess *ContentBlock) error {
 	isRef := contentToProcess.Type == "ref"
-	if true {
-		contentAttrs, err := contentToProcess.Rest.JustAttributes()
-		if err.HasErrors() {
-			log.Fatal(err)
-		}
-		for k, contentAttr := range contentAttrs {
-			if k == "ref" {
-				if !isRef {
-					ProcessReference(contentToProcess, contentToProcess)
-					return
-				}
-				tr, ok := contentAttr.Expr.(*hclsyntax.ScopeTraversalExpr)
-				if !ok {
-					return
-				}
-				dotNotation := ""
-				for _, v := range tr.Traversal {
-					named, ok := v.(hcl.TraverseRoot)
-					if ok {
-						dotNotation += named.Name
-						dotNotation += "."
-					}
-					named2, ok := v.(hcl.TraverseAttr)
-					if ok {
-						dotNotation += named2.Name
-						dotNotation += "."
-					}
-				}
-				dotNotation = dotNotation[0 : len(dotNotation)-1]
-				referencedContent, ok := t.ContentBlocks[dotNotation]
-
+	contentAttrs, err := contentToProcess.Rest.JustAttributes()
+	if err.HasErrors() {
+		return err
+	}
+	for k, contentAttr := range contentAttrs {
+		if k == "ref" {
+			if !isRef {
+				return ProcessReference(contentToProcess, contentToProcess)
+			}
+			tr, ok := contentAttr.Expr.(*hclsyntax.ScopeTraversalExpr)
+			if !ok {
+				return fmt.Errorf("ref should have a dot notation as value")
+			}
+			dotNotation := ""
+			for _, v := range tr.Traversal {
+				named, ok := v.(hcl.TraverseRoot)
 				if ok {
-					ProcessReference(contentToProcess, referencedContent)
+					dotNotation += named.Name
+					dotNotation += "."
 				}
+				named2, ok := v.(hcl.TraverseAttr)
+				if ok {
+					dotNotation += named2.Name
+					dotNotation += "."
+				}
+			}
+			dotNotation = dotNotation[0 : len(dotNotation)-1]
+			referencedContent, ok := t.ContentBlocks[dotNotation]
+
+			if ok {
+				return ProcessReference(contentToProcess, referencedContent)
 			}
 		}
 	}
+	return nil
 }
